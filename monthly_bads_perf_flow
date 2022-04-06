@@ -1,0 +1,169 @@
+
+------------------------------ ACOMPANHAMENTO POR SELLER ------------------------------ 
+
+-- enviar a rm
+select
+  cust_id,
+  accion,
+  sum(case when insert_date = current_date - 15 then 1 else 0 end) d15,
+  sum(case when insert_date = current_date - 14 then 1 else 0 end) d14,
+  sum(case when insert_date = current_date - 13 then 1 else 0 end) d13,
+  sum(case when insert_date = current_date - 12 then 1 else 0 end) d12,
+  sum(case when insert_date = current_date - 11 then 1 else 0 end) d11,
+  sum(case when insert_date = current_date - 10 then 1 else 0 end) d10,
+  sum(case when insert_date = current_date - 9 then 1 else 0 end) d9,
+  sum(case when insert_date = current_date - 8 then 1 else 0 end) d8,
+  sum(case when insert_date = current_date - 7 then 1 else 0 end) d7,
+  sum(case when insert_date = current_date - 6 then 1 else 0 end) d6,
+  sum(case when insert_date = current_date - 5 then 1 else 0 end) d5,
+  sum(case when insert_date = current_date - 4 then 1 else 0 end) d4,
+  sum(case when insert_date = current_date - 3 then 1 else 0 end) d3,
+  sum(case when insert_date = current_date - 2 then 1 else 0 end) d2,
+  sum(case when insert_date = current_date - 1 then 1 else 0 end) ontem,
+  sum(case when insert_date = current_date then 1 else 0 end) hj,
+  (d15 + d14 + d13 + d12 + d11 + d10 + d9 + d8 + d7 + d6 + d5 + d4 + d3 + d2 + ontem + hj) soma
+from SCORING.gestion_protected_users
+where accion = 'enviar a rm'
+  and insert_date > current_date - 15
+group by 1,2
+order by 19 desc;
+
+
+-- quitar la marca
+select
+  cust_id,
+  accion,
+  sum(case when insert_date = current_date - 15 then 1 else 0 end) d15,
+  sum(case when insert_date = current_date - 14 then 1 else 0 end) d14,
+  sum(case when insert_date = current_date - 13 then 1 else 0 end) d13,
+  sum(case when insert_date = current_date - 12 then 1 else 0 end) d12,
+  sum(case when insert_date = current_date - 11 then 1 else 0 end) d11,
+  sum(case when insert_date = current_date - 10 then 1 else 0 end) d10,
+  sum(case when insert_date = current_date - 9 then 1 else 0 end) d9,
+  sum(case when insert_date = current_date - 8 then 1 else 0 end) d8,
+  sum(case when insert_date = current_date - 7 then 1 else 0 end) d7,
+  sum(case when insert_date = current_date - 6 then 1 else 0 end) d6,
+  sum(case when insert_date = current_date - 5 then 1 else 0 end) d5,
+  sum(case when insert_date = current_date - 4 then 1 else 0 end) d4,
+  sum(case when insert_date = current_date - 3 then 1 else 0 end) d3,
+  sum(case when insert_date = current_date - 2 then 1 else 0 end) d2,
+  sum(case when insert_date = current_date - 1 then 1 else 0 end) ontem,
+  sum(case when insert_date = current_date then 1 else 0 end) hj,
+  (d15 + d14 + d13 + d12 + d11 + d10 + d9 + d8 + d7 + d6 + d5 + d4 + d3 + d2 + ontem + hj) soma
+from SCORING.gestion_protected_users
+where accion = 'quitar la marca'
+  and insert_date >= current_date - 15
+group by 1,2
+order by 19 desc;
+
+
+
+---------------------------- ACOMPANHAMENTO POR FREQUENCIA ---------------------------- 
+
+-- 8 de 16 dias (50%)
+create multiset volatile table frecuencia_mala_aparicion, no log as 
+  (
+  select
+    cust_id
+  from SCORING.gestion_protected_users
+  where insert_date >= current_date - 15
+    and accion = 'quitar la marca'
+  group by 1
+  having count(cust_id) >= 8
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+
+
+
+-------------------------- EXECUÇÃO DA REGRA --------------------------
+
+-- add na tabela sellers para quitar PU
+insert into scoring.performance_flow_protected_users
+  SELECT
+    current_date,
+    tab1.site_id,
+    tab1.cust_id,
+    tab1.segmento,
+    tab1.subsegmento,
+    tab1.tipofoco,
+    tab1.is_trusted,
+    tab1.ratio_tpv_on,
+    tab1.parcela_me2,
+    tab1.gmv_approved_1,
+    tab1.gmv_approved_2,
+    tab1.gmv_approved_3,
+    tab1.gmv_claim_1,
+    tab1.gmv_claim_2,
+    tab1.gmv_claim_3,
+    tab1.cashout_1,
+    tab1.cashout_2,
+    tab1.cashout_3,
+    tab1.ratio_gmv_claim_1,
+    tab1.ratio_gmv_claim_2,
+    tab1.ratio_gmv_claim_3,
+    tab1.ratio_co_1,
+    tab1.ratio_co_2,
+    tab1.ratio_co_3,
+    tab1.good_m1,
+    tab1.good_m2,
+    tab1.good_m3,
+    tab1.bad_m1,
+    tab1.bad_m2,
+    tab1.bad_m3,
+    tab1.riesgo,
+    tab1.perfil,
+    tab1.accion,
+    tab1.motivo,
+    tab1.regla
+  FROM
+    (
+    select
+      a.site_id,
+      b.cust_id,
+      a.segmento,
+      a.subsegmento,
+      a.tipofoco,
+      a.is_trusted,
+      a.ratio_tpv_on,
+      a.parcela_me2,
+      a.gmv_approved_1,
+      a.gmv_approved_2,
+      a.gmv_approved_3,
+      a.gmv_claim_1,
+      a.gmv_claim_2,
+      a.gmv_claim_3,
+      a.cashout_1,
+      a.cashout_2,
+      a.cashout_3,
+      a.ratio_gmv_claim_1,
+      a.ratio_gmv_claim_2,
+      a.ratio_gmv_claim_3,
+      a.ratio_co_1,
+      a.ratio_co_2,
+      a.ratio_co_3,
+      a.good_m1,
+      a.good_m2,
+      a.good_m3,
+      a.bad_m1,
+      a.bad_m2,
+      a.bad_m3,
+      a.riesgo,
+      a.perfil,
+      a.accion,
+      a.motivo,
+      a.regla,
+      rank() over (partition by a.cust_id order by a.insert_date desc) ranking
+    from SCORING.gestion_protected_users a
+    join frecuencia_mala_aparicion b
+      on a.cust_id = b.cust_id) tab1
+    WHERE ranking = 1;
+  
+
+
+
+select * from scoring.performance_flow_protected_users where insert_date = '2021-11-01';
+
+delete from scoring.performance_flow_protected_users where insert_date = current_date;
+
