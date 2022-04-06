@@ -1,0 +1,249 @@
+
+----------------------------------------------------------------------------------------
+---------------------------- PU: REGLAS DE MALA PERFORMANCE ----------------------------
+----------------------------------------------------------------------------------------
+
+-- Doc Base: https://docs.google.com/presentation/d/1IBaPNaju2oAOmil_7qlePDtZcaGiIvTRouDh_S8Dsqg/edit#slide=id.gc8a1f1629c_0_0
+
+
+-------------------------- BÁSICO DO SELLER --------------------------
+
+-- trazer lista de PUs que entraram apenas por performance
+create multiset volatile table pu_por_performance as 
+  (
+  select
+    a.user_id cust_id
+  from SCORING.sellers_protected_users a
+  left join WHOWNER.BT_MPR_CUST_RESTRICTION b
+    on a.user_id = b.cust_id
+  where b.status <> 'P'
+    or a.user_id not in
+    (876858,  4676385,  14263958, 17979964, 22080006, 23166917, 34788260, 35960394,
+    37617471,  41086084,  44278952,  44959535,  50784630,  51824587,  58631177,  59725045,
+    65756538,  67349442,  68038863,  68719721,  73078240,  75498670,  77843055,  79917669,
+    80374162,  80944253,  85943127,  86465455,  86560265,  86710620,  90816790,  92541850,
+    93496333,  94234616,  95369104,  97070550,  97764163,  99161875,  111225652,  111639243,
+    118625594,  126899818,  126979732,  127057316,  128295675,  130087516,  133289765,  134608322,
+    139743329,  142772691,  143461415,  145729298,  149917810,  150150936,  151477438,  151498075,
+    152399908,  158190393,  162994698,  164283151,  165363623,  166358052,  169094968,  172849490,
+    174546794,  175802218,  179370020,  181512271,  182248570,  182529989,  182881146,  183002668,
+    183589944,  184388751,  186955213,  189054865,  190161270,  191712076,  193396752,  196616373,
+    198050665,  198150802,  198497034,  202196412,  202725990,  205166439,  207772151,  208668903,
+    209852667,  210387536,  212176278,  213042787,  213440324,  215509752,  217948964,  219324699,
+    220433626,  222896452,  224199222,  227492936,  228448143,  228528597,  230104939,  234383055,
+    235378782,  238398394,  246823398,  247193616,  264121855,  270133276,  270334804,  270670830,
+    271166924,  272313980,  277068262,  288237401,  297426633,  302731842,  306673142,  309392279,
+    315195818,  321922977,  324697358,  330311138,  330351648,  331887382,  333218541,  333919365,
+    342732309,  344632676,  357078642,  376314811,  377933997,  382046521,  394731993,  396394694,
+    413956184,  416611706,  419106647,  428398801,  428623854,  429396783,  429743868,  431874614,
+    432151005,  439632457,  441750996,  442329459,  444012762,  444875108,  445777160,  446481162,
+    452936648,  458046680,  464496989,  467817849,  474487654,  482391025,  503796035,  516383228,
+    525648996,  527648239,  528784479,  533669028,  535546443,  544560778,  583135920,  594449678,
+    605060795,  618025962,  623461399,  640506385,  656006913,  7206131)
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+  
+-------------------------------- REGRA DE PERFOMRNACE --------------------------------
+
+-- tabla soporte de tpv
+create multiset volatile table tpv_90d, no log as 
+  (
+  select
+    a.cust_id,
+    sum(case when b.tpv_segment_id = 'ON' then pay_total_paid_dol_amt else 0 end) as tpv_on,
+    sum(b.pay_total_paid_dol_amt) tpv,
+    round(cast(tpv_on as float)/cast(tpv as float),2) ratio_tpv_on
+  from pu_por_performance a
+  left join whowner.BT_SCO_ORIGIN_REPORT b
+    on a.cust_id = b.cus_cust_id_sel
+  where b.pay_created_dt >= current_date - 93
+  group by 1
+  having ratio_tpv_on >= 0.9
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-- parcela me2 90d
+create multiset volatile table parcela_me2, no log as
+  (
+  SELECT
+    tab1.cust cust_id,
+    round(cast(tab2.ofs_me2 as float)/cast(tab1.ofs_tot as float),2) parcela_me2
+  FROM
+    (
+    select
+      a.cust_id cust,
+      count(b.ord_order_id) ofs_tot
+    from tpv_90d a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.tim_day_winning_date >= current_date - 93
+    group by 1
+    ) tab1
+  LEFT JOIN
+    (
+    select
+      a.cust_id cust,
+      count(b.ord_order_id) ofs_me2
+    from tpv_90d a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.tim_day_winning_date >= current_date - 93
+      and b.is_me2 = 1
+    group by 1
+    ) tab2
+    ON tab1.cust = tab2.cust
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-- variaveis da regra
+create multiset volatile table calculo_ratios as 
+  (
+ SELECT distinct
+    b.sit_site_id site_id,
+    a.cust_id,
+    d.segmento,
+    d.segmento_seller_detail,
+    d.tipofoco,
+    c.trusted,
+    a.ratio_tpv_on,
+
+    zeroifnull(sum(case when (b.tim_day_winning_date >= current_date - 33) and b.is_refund = 0 then gmv_usd else 0 end)) gmv_approved_1,
+    zeroifnull(sum(case when (b.tim_day_winning_date >= current_date - 33) and b.has_claim_seller = 1 then gmv_usd else 0 end)) gmv_claim_1,
+    zeroifnull(sum(case when (b.tim_day_winning_date >= current_date - 33) then b.bpp_cashout_final else 0 end)) cashout_1,
+    zeroifnull(gmv_claim_1/nullifzero(gmv_approved_1)) ratio_gmv_claim_1,
+    zeroifnull(cashout_1/nullifzero(gmv_claim_1)) ratio_co_1,
+    (select
+      round(cast(sum(case when b.shp_status_id = 'cancelled' then 1 else 0 end) as float)/cast(count(b.shp_status_id) as float),2)
+    from pu_por_performance a left join WHOWNER.BT_SHP_SHIPMENTS b on a.cust_id = b.shp_sender_id
+    where b.shp_type = 'forward' 
+      and b.tim_day_winning_date >= current_date - 33) ratio_cancel_1,
+
+    (case when ((ratio_gmv_claim_1 < 0.1 and ratio_cancel_1 < 0.025) or (ratio_gmv_claim_1 < 0.1 and ratio_co_1 < 0.05) or (ratio_gmv_claim_1 < 0.1 and ratio_cancel_1 < 0.025)) then 1 else 0 end) good_m1,
+    (case when ((ratio_gmv_claim_1 > 0.5 and ratio_cancel_1 > 0.025) or (ratio_gmv_claim_1 > 0.1 and ratio_co_1 > 0.05) or (ratio_gmv_claim_1 > 0.1 and ratio_cancel_1 > 0.025)) then 1 else 0 end) bad_m1,
+
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 63 and current_date - 34) and b.is_refund = 0 then gmv_usd else 0 end)) gmv_approved_2,
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 63 and current_date - 34) and b.has_claim_seller = 1 then gmv_usd else 0 end)) gmv_claim_2,
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 63 and current_date - 34) then b.bpp_cashout_final else 0 end)) cashout_2,
+    zeroifnull(gmv_claim_2/nullifzero(gmv_approved_2)) ratio_gmv_claim_2,
+    zeroifnull(cashout_2/nullifzero(gmv_claim_2)) ratio_co_2,
+    (select
+      round(cast(sum(case when b.shp_status_id = 'cancelled' then 1 else 0 end) as float)/cast(count(b.shp_status_id) as float),2)
+    from pu_por_performance a left join WHOWNER.BT_SHP_SHIPMENTS b on a.cust_id = b.shp_sender_id
+    where b.shp_type = 'forward' 
+      and b.tim_day_winning_date between current_date - 63 and current_date - 34) ratio_cancel_2,
+
+    (case when ((ratio_gmv_claim_2 < 0.1 and ratio_cancel_2 < 0.025) or (ratio_gmv_claim_2 < 0.1 and ratio_co_2 < 0.05) or (ratio_gmv_claim_2 < 0.1 and ratio_cancel_2 < 0.025)) then 1 else 0 end) good_m2,
+    (case when ((ratio_gmv_claim_2 > 0.1 and ratio_cancel_2 > 0.025) or (ratio_gmv_claim_2 > 0.1 and ratio_co_2 > 0.05) or (ratio_gmv_claim_2 > 0.1 and ratio_cancel_2 > 0.025)) then 1 else 0 end) bad_m2,
+    
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 93 and current_date - 64) and b.is_refund = 0 then gmv_usd else 0 end)) gmv_approved_3,
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 93 and current_date - 64) and b.has_claim_seller = 1 then gmv_usd else 0 end)) gmv_claim_3,
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 93 and current_date - 64) then b.bpp_cashout_final else 0 end)) cashout_3,
+    zeroifnull(gmv_claim_3/nullifzero(gmv_approved_3)) ratio_gmv_claim_3,
+    zeroifnull(cashout_3/nullifzero(gmv_claim_3)) ratio_co_3,
+    (select
+      round(cast(sum(case when b.shp_status_id = 'cancelled' then 1 else 0 end) as float)/cast(count(b.shp_status_id) as float),2)
+    from pu_por_performance a left join WHOWNER.BT_SHP_SHIPMENTS b on a.cust_id = b.shp_sender_id
+    where b.shp_type = 'forward' 
+      and b.tim_day_winning_date between current_date - 93 and current_date - 64) ratio_cancel_3,
+
+    (case when ((ratio_gmv_claim_3 < 0.1 and ratio_cancel_3 < 0.025) or (ratio_gmv_claim_3 < 0.1 and ratio_co_3 < 0.05) or (ratio_gmv_claim_3 < 0.1 and ratio_cancel_3 < 0.025)) then 1 else 0 end) good_m3,
+    (case when ((ratio_gmv_claim_3 > 0.1 and ratio_cancel_3 > 0.025) or (ratio_gmv_claim_3 > 0.1 and ratio_co_3 > 0.05) or (ratio_gmv_claim_3 > 0.1 and ratio_cancel_3 > 0.025)) then 1 else 0 end) bad_m3
+      
+  FROM tpv_90d a
+  JOIN scoring.fraud_main b
+    ON a.cust_id = b.cus_cust_id_sel
+  LEFT JOIN SCORING.pf_trusted_sellers_log_reasons c
+    ON a.cust_id = c.cus_cust_id_sel
+  LEFT JOIN WHOWNER.LK_SEGMENTO_SELLERS d
+    ON a.cust_id = d.cus_cust_id_sel
+  WHERE b.tim_day_winning_date >= current_date - 93
+    AND c.fecha_hasta is null
+  GROUP BY 1,2,3,4,5,6,7
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+
+-------------------------- EXECUÇÃO DA REGRA --------------------------
+
+-- add na tabela sellers para enviar a RM
+insert into scoring.gestion_protected_users
+  select distinct
+    current_date, a.site_id, a.cust_id, a.segmento, a.segmento_seller_detail, a.tipofoco, a.trusted, a.ratio_tpv_on, zeroifnull(b.parcela_me2),
+    a.gmv_approved_1, a.gmv_approved_2, a.gmv_approved_3, a.gmv_claim_1, a.gmv_claim_2, a.gmv_claim_3, a.cashout_1, a.cashout_2, a.cashout_3,
+    a.ratio_gmv_claim_1, a.ratio_gmv_claim_2, a.ratio_gmv_claim_3, a.ratio_co_1, a.ratio_co_2, a.ratio_co_3,
+    a.good_m1, a.good_m2, a.good_m3, a.bad_m1, a.bad_m2, a.bad_m3,
+    (case
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 + a.bad_m3 = 3 and b.parcela_me2 >= 0.5 then 'S'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 < 0.5 then 'S'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 < 0.5 then 'S'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 >= 0.5 then 'S'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 >= 0.5 then 'S'
+      when a.trusted = 0 and a.bad_m1 = 1 and b.parcela_me2 < 0.5 then 'S'
+      else 'N'
+    end) riesgo,
+    
+    (case
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 + a.bad_m3 = 3 and b.parcela_me2 >= 0.5 then 'riesgoso'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 < 0.5 then 'riesgoso'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 < 0.5 then 'riesgoso'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 >= 0.5 then 'dudoso'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 >= 0.5 then 'dudoso'
+      when a.trusted = 0 and a.bad_m1 = 1 and b.parcela_me2 < 0.5 then 'dudoso'
+      else 'mantener la marca'
+    end) perfil,
+    
+    (case
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 + a.bad_m3 = 3 and b.parcela_me2 >= 0.5 then 'quitar la marca'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 < 0.5 then 'quitar la marca'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 < 0.5 then 'quitar la marca'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 >= 0.5 then 'enviar a rm'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 >= 0.5 then 'enviar a rm'
+      when a.trusted = 0 and a.bad_m1 = 1 and b.parcela_me2 < 0.5 then 'enviar a rm'
+      else 'mantener la marca'
+    end) accion,
+    
+    (case
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 + a.bad_m3 = 3 and b.parcela_me2 >= 0.5 then '3m mala performance con me2'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 < 0.5 then '2m mala performance sin me2'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 < 0.5 then '2m mala performance sin me2'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 >= 0.5 then '2m mala performance con me2'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 >= 0.5 then '2m mala performance con me2'
+      when a.trusted = 0 and a.bad_m1 = 1 and b.parcela_me2 < 0.5 then '1m mala performance sin me2'
+      else 'no cumple criterios de salida'
+    end) motivo,
+
+    (case
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 + a.bad_m3 = 3 and b.parcela_me2 >= 0.5 then 'me2 + untrusted + bad_m1 + bad_m2 + bad_m3'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 < 0.5 then 'no_me2 + untrusted + bad_m1 + bad_m3'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 < 0.5 then 'no_me2 + untrusted + bad_m1 + bad_m2'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m3 = 2 and b.parcela_me2 >= 0.5 then 'me2 + untrusted + bad_m1 + bad_m3'
+      when a.trusted = 0 and a.bad_m1 + a.bad_m2 = 2 and b.parcela_me2 >= 0.5 then 'me2 + untrusted + bad_m1 + bad_m2'
+      when a.trusted = 0 and a.bad_m1 = 1 and b.parcela_me2 < 0.5 then 'no_me2 + untrusted + bad_m1'
+      else '-'
+    end) regla
+  from calculo_ratios a
+  left join parcela_me2 b
+    on a.cust_id = b.cust_id
+  where regla <> '-';
+
+
+
+-------------------------- SELEÇÃO DE DADOS --------------------------
+
+-- seleção de dados
+select * from scoring.gestion_protected_users order by 1 desc;
+
+delete from scoring.gestion_protected_users where insert_date = current_date;
+
+UPDATE scoring.risk_microbof_efic_dia
+  SET insert_date = '2021-09-26'
+  WHERE data_fchmto_caso = '2021-09-25';
+
+
+
+
