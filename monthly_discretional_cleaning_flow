@@ -1,0 +1,570 @@
+
+----------------------------------------------------------------------------------------
+---------------------------- PU: REGLAS DE LIMPIEZA MENSUAL ----------------------------
+----------------------------------------------------------------------------------------
+
+-- Doc Base: https://docs.google.com/presentation/d/1IBaPNaju2oAOmil_7qlePDtZcaGiIvTRouDh_S8Dsqg/edit#slide=id.gc8a1f1629c_0_0
+
+
+-------------------------- BÁSICO DO SELLER --------------------------
+
+-- trazer lista de PUs que entraram apenas por performance
+create multiset volatile table pu_por_performance as fr
+  (
+  select
+    user_id cust_id
+  from SCORING.seller_protected_users
+  where user_id not in
+    ('4000690',	'640506385',	'154017562',	'543138657',	'81073686',	'740576583',	'207772151',	'475621822',
+    '4315320',	'655200168',	'156668525',	'544560778',	'90816790',	'740576732',	'208668903',	'480844840',
+    '7206131',	'665847480',	'160631474',	'545512028',	'92618748',	'740578748',	'220433626',	'480884087',
+    '13433285',	'666361450',	'162591131',	'557999306',	'95331610',	'742417782',	'225769975',	'488758624',
+    '15364964',	'672026036',	'165137674',	'588959040',	'98306705',	'742418525',	'228448143',	'491223546',
+    '16882219',	'676102794',	'166358052',	'592699107',	'109372189',	'743776176',	'228929046',	'502949060',
+    '18334024',	'677170179',	'166441907',	'594449678',	'119423919',	'743778350',	'231754984',	'508620775',
+    '24676717',	'698838243',	'166720159',	'600591756',	'121198494',	'746852038',	'233754943',	'512931443',
+    '26690148',	'701052490',	'174546794',	'615209404',	'126979732',	'762673378',	'234257211',	'516548541',
+    '27498826',	'720015848',	'176987550',	'618127326',	'135367987',	'769887171',	'235196631',	'257121498',
+    '31496406',	'721391674',	'180492586',	'624620883',	'135475270',	'770417255',	'236522920',	'258628022',
+    '33320753',	'729542147',	'181512271',	'629079805',	'136655604',	'770417402',	'242169642',	'264692451',
+    '34788260',	'734421891',	'189320743',	'630676754',	'139074700',	'770437177',	'244830810',	'265207256',
+    '35166160',	'734421908',	'193396752',	'640038170',	'140736532',	'784824159',	'250219482',	'267326407',
+    '37133433',	'734432345',	'194332223',	'413956184',	'142941371',	'790160573',	'255687605',	'270133276',
+    '48333457',	'734435134',	'194762297',	'427037992',	'144289474',	'522448342',	'312857872',	'270334804',
+    '50426632',	'734436762',	'198150802',	'429743868',	'144447297',	'527648239',	'323592145',	'270670830',
+    '50784630',	'734437010',	'198523484',	'439632457',	'149901475',	'533669028',	'328373881',	'270709216',
+    '67536781',	'734438644',	'203427742',	'441750996',	'149917810',	'537942896',	'331697704',	'277068262',
+    '71601183',	'740573665',	'206675783',	'441990739',	'151404132',	'541045190',	'346622979',	'291734554',
+    '378918257',	'392665389',	'364189422',	'300933386',	'389305841',	'394724583',	'394731993')
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-------------------------------- REGRA DE PERFOMRNACE --------------------------------
+
+-- tabla soporte de tpv
+create multiset volatile table tpv_90d, no log as 
+  (
+  select
+    a.cust_id,
+    sum(case when b.tpv_segment_id = 'ON' then pay_total_paid_dol_amt else 0 end) as tpv_on,
+    sum(b.pay_total_paid_dol_amt) tpv,
+    round(cast(tpv_on as float)/cast(tpv as float),2) ratio_tpv_on
+  from pu_por_performance a
+  left join whowner.BT_SCO_ORIGIN_REPORT b
+    on a.cust_id = b.cus_cust_id_sel
+  where b.pay_created_dt >= current_date - 93
+  group by 1
+  having ratio_tpv_on >= 0.9
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-- parcela me2 90d
+create multiset volatile table parcela_me2, no log as
+  (
+  SELECT
+    tab1.cust cust_id,
+    round(cast(tab2.ofs_me2 as float)/cast(tab1.ofs_tot as float),2) parcela_me2
+  FROM
+    (
+    select
+      a.cust_id cust,
+      count(b.ord_order_id) ofs_tot
+    from tpv_90d a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.tim_day_winning_date >= current_date - 93
+    group by 1
+    ) tab1
+  LEFT JOIN
+    (
+    select
+      a.cust_id cust,
+      count(b.ord_order_id) ofs_me2
+    from tpv_90d a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.tim_day_winning_date >= current_date - 93
+      and b.is_me2 = 1
+    group by 1
+    ) tab2
+    ON tab1.cust = tab2.cust
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-- variaveis da regra
+create multiset volatile table calculo_ratios as 
+  (
+  select distinct
+    b.sit_site_id site_id,
+    a.cust_id,
+    d.segmento,
+    d.segmento_seller_detail subsegmento,
+    d.tipofoco,
+    c.trusted,
+    a.ratio_tpv_on,
+    e.parcela_me2,
+
+    zeroifnull(sum(case when (b.tim_day_winning_date >= current_date - 33) and b.is_refund = 0 then gmv_usd else 0 end)) gmv_approved_1,
+    zeroifnull(sum(case when (b.tim_day_winning_date >= current_date - 33) and b.has_claim_seller = 1 then gmv_usd else 0 end)) gmv_claim_1,
+    zeroifnull(sum(case when (b.tim_day_winning_date >= current_date - 33) then b.bpp_cashout_final else 0 end)) cashout_1,
+    zeroifnull(gmv_claim_1/nullifzero(gmv_approved_1)) ratio_gmv_claim_1,
+    zeroifnull(cashout_1/nullifzero(gmv_claim_1)) ratio_co_1,
+    (case when (ratio_gmv_claim_1 < 0.1 and ratio_co_1 < 0.05) then 1 else 0 end) good_m1,
+    (case when (ratio_gmv_claim_1 > 0.2 and ratio_co_1 > 0.1) then 1 when ratio_gmv_claim_1 >= 0.5 then 1 else 0 end) bad_m1,
+
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 63 and current_date - 34) and b.is_refund = 0 then gmv_usd else 0 end)) gmv_approved_2,
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 63 and current_date - 34) and b.has_claim_seller = 1 then gmv_usd else 0 end)) gmv_claim_2,
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 63 and current_date - 34) then b.bpp_cashout_final else 0 end)) cashout_2,
+    zeroifnull(gmv_claim_2/nullifzero(gmv_approved_2)) ratio_gmv_claim_2,
+    zeroifnull(cashout_2/nullifzero(gmv_claim_2)) ratio_co_2,
+    (case when (ratio_gmv_claim_2 < 0.1 and ratio_co_2 < 0.05) then 1 else 0 end) good_m2,
+    (case when (ratio_gmv_claim_2 > 0.2 and ratio_co_2 > 0.1) then 1 when ratio_gmv_claim_2 >= 0.5 then 1 else 0 end) bad_m2,
+    
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 93 and current_date - 64) and b.is_refund = 0 then gmv_usd else 0 end)) gmv_approved_3,
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 93 and current_date - 64) and b.has_claim_seller = 1 then gmv_usd else 0 end)) gmv_claim_3,
+    zeroifnull(sum(case when (b.tim_day_winning_date between current_date - 93 and current_date - 64) then b.bpp_cashout_final else 0 end)) cashout_3,
+    zeroifnull(gmv_claim_3/nullifzero(gmv_approved_3)) ratio_gmv_claim_3,
+    zeroifnull(cashout_3/nullifzero(gmv_claim_3)) ratio_co_3,
+    (case when (ratio_gmv_claim_3 < 0.1 and ratio_co_3 < 0.05) then 1 else 0 end) good_m3,
+    (case when (ratio_gmv_claim_3 > 0.2 and ratio_co_3 > 0.1) then 1 when ratio_gmv_claim_3 >= 0.5 then 1 else 0 end) bad_m3
+      
+  from tpv_90d a
+  left join scoring.fraud_main b
+    on a.cust_id = b.cus_cust_id_sel
+  left join SCORING.pf_trusted_sellers_log_reasons c
+    on a.cust_id = c.cus_cust_id_sel
+  left join WHOWNER.LK_SEGMENTO_SELLERS d
+    ON a.cust_id = d.cus_cust_id_sel
+  left join parcela_me2 e
+    on a.cust_id = e.cust_id
+  where b.tim_day_winning_date >= current_date - 93
+    and c.fecha_hasta is null
+  GROUP BY 1,2,3,4,5,6,7,8
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+
+--------------------------- REGRAS DE LIMPEZA - LIMEDICOs ---------------------------
+
+-- limedico p/ CG
+create multiset volatile table limedi_com_cg as 
+  (
+  select
+    a.site_id,
+    a.cust_id,
+    a.segmento,
+    a.subsegmento,
+    a.tipofoco,
+    a.trusted,
+    a.ratio_tpv_on,
+    a.parcela_me2,
+    (case when a.cust_id > 0 then 'S' else 0 end) riesgo,
+    (case when a.cust_id > 0 then 'limpieza' else 0 end) perfil,
+    (case when a.cust_id > 0 then 'quitar la marca' else 0 end) accion,
+    (case when a.cust_id > 0 then 'comercial' else 0 end) motivo,
+    (case when a.cust_id > 0 then 'cg - pérdida de asesoria y/o tipofoco' else 'xxx' end) regla
+  from calculo_ratios a
+  left join WHOWNER.LK_SEGMENTO_SELLERS b
+    on a.cust_id = b.cus_cust_id_sel
+  where b.segmento = 'CARTERA GESTIONADA'
+    and b.segmento_seller_detail in ('NO ASESORADO', 'CBT NO ASESORADO')
+    and regla <> 'xxx'
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-- limedico p/ TO
+create multiset volatile table limedi_com_to as 
+  (
+  select
+    a.site_id,
+    a.cust_id,
+    a.segmento,
+    a.subsegmento,
+    a.tipofoco,
+    a.trusted,
+    a.ratio_tpv_on,
+    a.parcela_me2,
+    (case when a.cust_id > 0 then 'S' else 0 end) riesgo,
+    (case when a.cust_id > 0 then 'limpieza' else 0 end) perfil,
+    (case when a.cust_id > 0 then 'quitar la marca' else 0 end) accion,
+    (case when a.cust_id > 0 then 'comercial' else 0 end) motivo,
+    (case when a.cust_id > 0 then 'to - pérdida de asesoria y/o tipofoco' else 'xxx' end) regla
+  from calculo_ratios a
+  left join WHOWNER.LK_SEGMENTO_SELLERS b
+    on a.cust_id = b.cus_cust_id_sel
+  where b.segmento = 'TO'
+    and (b.segmento_seller_detail in ('NO ASESORADO', 'CBT NO ASESORADO')
+         or
+         b.segmento_seller_detail not in ('FIRST PARTY', 'PRIVATE LABEL') and b.tipofoco in ('D (Bajo)', 'Sin Foco'))
+    and regla <> 'xxx'
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-- limedico p/ MT
+create multiset volatile table limedi_com_mt as 
+  (
+  select
+    a.site_id,
+    a.cust_id,
+    a.segmento,
+    a.subsegmento,
+    a.tipofoco,
+    a.trusted,
+    a.ratio_tpv_on,
+    a.parcela_me2,
+    (case when a.cust_id > 0 then 'S' else 0 end) riesgo,
+    (case when a.cust_id > 0 then 'limpieza' else 0 end) perfil,
+    (case when a.cust_id > 0 then 'quitar la marca' else 0 end) accion,
+    (case when a.cust_id > 0 then 'comercial' else 0 end) motivo,
+    (case when a.cust_id > 0 then 'mt - pérdida de tipofoco' else 'xxx' end) regla
+  from calculo_ratios a
+  left join WHOWNER.LK_SEGMENTO_SELLERS b
+    on a.cust_id = b.cus_cust_id_sel
+  where b.segmento = 'MIDTAIL'
+    and b.segmento_seller_detail in ('NO ASESORADO', 'CBT NO ASESORADO')
+    and b.tipofoco in ('D (Bajo)', 'Sin Foco')
+    and regla <> 'xxx'
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+
+-------------------------- REGRA DE LIMPEZA POR INAB NO MP -------------------------- 
+
+-- limedi de PUs que estão com restricao ou inab no MP
+create multiset volatile table limedi_restr, no log as 
+  (
+  select distinct
+    a.site_id,
+    a.cust_id,
+    a.segmento,
+    a.subsegmento,
+    a.tipofoco,
+    a.trusted,
+    a.ratio_tpv_on,
+    a.parcela_me2,
+    (case when a.cust_id > 0 then 'S' else 0 end) riesgo,
+    (case when a.cust_id > 0 then 'limpieza' else 0 end) perfil,
+    (case when a.cust_id > 0 then 'quitar la marca' else 0 end) accion,
+    (case when a.cust_id > 0 then 'inhabilitacion' else 0 end) motivo,
+    (case when a.cust_id > 0 then 'poseen restriccion de PF-MP' else 'xxx' end) regla
+  from calculo_ratios a
+  left join WHOWNER.BT_MPR_CUST_RESTRICTION b
+    on a.cust_id = b.cust_id
+  where b.status = 'P'
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-- si tiene restricciones de faturador (XD, FF...)
+create multiset volatile table limedi_fat, no log as 
+  (
+  select distinct
+    a.site_id,
+    a.cust_id,
+    a.segmento,
+    a.subsegmento,
+    a.tipofoco,
+    a.trusted,
+    a.ratio_tpv_on,
+    a.parcela_me2,
+    (case when a.cust_id > 0 then 'S' else 0 end) riesgo,
+    (case when a.cust_id > 0 then 'limpieza' else 0 end) perfil,
+    (case when a.cust_id > 0 then 'quitar la marca' else 0 end) accion,
+    (case when a.cust_id > 0 then 'inhabilitacion' else 0 end) motivo,
+    (case when a.cust_id > 0 then 'poseen restriccion de facturador' else 'xxx' end) regla
+  from calculo_ratios a
+  left join WHOWNER.BT_USER_RESTRICTIONS b
+    on a.cust_id = b.rct_user_id
+  where b.rct_deleted_at is null
+    and b.rct_restriction_name like any ('%FF_%','%XD_%','SHIPPING_%','%PLACES_%')
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+
+------------------------------ REGRA DE LIMPEZA POR GMV ------------------------------ 
+
+-- atuando, mas entrando em churn
+create multiset volatile table limedi_churning, no log as 
+  (
+  SELECT
+    a.site_id,
+    a.cust_id,
+    a.segmento,
+    a.subsegmento,
+    a.tipofoco,
+    a.trusted,
+    a.ratio_tpv_on,
+    a.parcela_me2,
+    (case when tab1.cust_id > 0 then 'S' else 0 end) riesgo,
+    (case when tab1.cust_id > 0 then 'limpieza' else 0 end) perfil,
+    (case when tab1.cust_id > 0 then 'quitar la marca' else 0 end) accion,
+    (case when tab1.cust_id > 0 then 'seller ML en churn' else 0 end) motivo,
+    (case when tab1.cust_id > 0 then 'entrando: regla de los 20%' else 'xxx' end) regla
+  FROM
+    (
+    select
+      a.cust_id,
+      sum(b.gmv_usd) gmv_m1
+    from calculo_ratios a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.is_refund = 0
+      and b.tim_day_winning_date >= current_date - 33
+    group by 1
+    ) tab1
+  LEFT JOIN
+    (
+    select
+      a.cust_id,
+      sum(b.gmv_usd) gmv_m2
+    from calculo_ratios a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.is_refund = 0
+      and b.tim_day_winning_date between current_date - 63 and current_date - 34
+    group by 1
+    ) tab2
+    ON tab1.cust_id = tab2.cust_id
+  LEFT JOIN
+    (
+    select
+      a.cust_id,
+      sum(b.gmv_usd) gmv_m3
+    from calculo_ratios a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.is_refund = 0
+      and b.tim_day_winning_date between current_date - 93 and current_date - 64
+    group by 1
+    ) tab3
+    ON tab1.cust_id = tab3.cust_id
+  LEFT JOIN
+    calculo_ratios a
+  ON tab1.cust_id = a.cust_id
+  WHERE (tab1.gmv_m1 <= 0.2 * tab2.gmv_m2 AND tab2.gmv_m2 <= 0.2 * tab3.gmv_m3)
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-- parou de vender (churn)
+create multiset volatile table limedi_churn, no log as 
+  (
+  SELECT
+    a.site_id,
+    a.cust_id,
+    a.segmento,
+    a.subsegmento,
+    a.tipofoco,
+    a.trusted,
+    a.ratio_tpv_on,
+    a.parcela_me2,
+    (case when tab1.cust_id > 0 then 'S' else 0 end) riesgo,
+    (case when tab1.cust_id > 0 then 'limpieza' else 0 end) perfil,
+    (case when tab1.cust_id > 0 then 'quitar la marca' else 0 end) accion,
+    (case when tab1.cust_id > 0 then 'seller ML en churn' else 0 end) motivo,
+    (case when tab1.cust_id > 0 then 'confirmado: 3m+ gmv zero' else 'xxx' end) regla
+  FROM
+    (
+    select
+      a.cust_id,
+      sum(b.gmv_usd) gmv_m1
+    from calculo_ratios a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.is_refund = 0
+      and b.tim_day_winning_date >= current_date - 33
+    group by 1
+    ) tab1
+  LEFT JOIN
+    (
+    select
+      a.cust_id,
+      sum(b.gmv_usd) gmv_m2
+    from calculo_ratios a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.is_refund = 0
+      and b.tim_day_winning_date between current_date - 63 and current_date - 34
+    group by 1
+    ) tab2
+    ON tab1.cust_id = tab2.cust_id
+  LEFT JOIN
+    (
+    select
+      a.cust_id,
+      sum(b.gmv_usd) gmv_m3
+    from calculo_ratios a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.is_refund = 0
+      and b.tim_day_winning_date between current_date - 93 and current_date - 64
+    group by 1
+    ) tab3
+    ON tab1.cust_id = tab3.cust_id
+  LEFT JOIN calculo_ratios a
+    ON tab1.cust_id = a.cust_id
+  WHERE (tab1.gmv_m1 = 0 AND tab2.gmv_m2 = 0 AND tab3.gmv_m3 = 0)
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+-- vende muito no ON, mas menos de 7,5K por mes (em média)
+create multiset volatile table limedi_gmv, no log as 
+  (
+  SELECT
+    a.site_id,
+    a.cust_id,
+    a.segmento,
+    a.subsegmento,
+    a.tipofoco,
+    a.trusted,
+    a.ratio_tpv_on,
+    a.parcela_me2,
+    (case when tab1.cust_id > 0 then 'S' else 0 end) riesgo,
+    (case when tab1.cust_id > 0 then 'limpieza' else 0 end) perfil,
+    (case when tab1.cust_id > 0 then 'quitar la marca' else 0 end) accion,
+    (case when tab1.cust_id > 0 then 'seller ML de bajisimo gmv' else 0 end) motivo,
+    (case when tab1.cust_id > 0 then 'gmv < 15K + ratio > 90%' else 'xxx' end) regla
+  FROM
+    (
+    select
+      a.cust_id,
+      sum(b.gmv_usd) gmv
+    from calculo_ratios a
+    left join SCORING.fraud_main b
+      on a.cust_id = b.cus_cust_id_sel
+    where b.tim_day_winning_date >= current_date - 93
+    group by 1
+    ) tab1
+  LEFT JOIN calculo_ratios a
+    ON tab1.cust_id = a.cust_id
+  WHERE tab1.gmv < 15000
+  )
+with data primary index (cust_id) on commit preserve rows;
+
+
+
+-------------------------- EXECUÇÃO DA REGRA --------------------------
+
+-- tabla de scoring para subir las infos
+create table scoring.cleaning_flow_protected_users
+  (
+  insert_date date,
+  site_id varchar(50),
+  cust_id int,
+  segmento varchar(50),
+  subsegmento varchar(50),
+  tipofoco varchar(50),
+  is_trusted int,
+  ratio_tpv_on float,
+  parcela_me2 float,
+  gmv_approved_1 float,
+  gmv_approved_2 float,
+  gmv_approved_3 float,
+  gmv_claim_1 float,
+  gmv_claim_2 float,
+  gmv_claim_3 float,
+  cashout_1 float,
+  cashout_2 float,
+  cashout_3 float,
+  ratio_gmv_claim_1 float,
+  ratio_gmv_claim_2 float,
+  ratio_gmv_claim_3 float,
+  ratio_co_1 float,
+  ratio_co_2 float,
+  ratio_co_3 float,
+  good_m1 int,
+  good_m2 int,
+  good_m3 int,
+  bad_m1 int,
+  bad_m2 int,
+  bad_m3 int,
+  riesgo varchar(50),
+  perfil varchar(50),
+  accion varchar(50),
+  motivo varchar(50),
+  regla varchar(50)
+  );
+
+
+-- add na tabela sellers para enviar a RM
+insert into scoring.cleaning_flow_protected_users
+  select distinct
+    current_date, a.site_id, a.cust_id, a.segmento, a.subsegmento, a.tipofoco, a.trusted, a.ratio_tpv_on, zeroifnull(a.parcela_me2),
+    b.gmv_approved_1, b.gmv_approved_2, b.gmv_approved_3, b.gmv_claim_1, b.gmv_claim_2, b.gmv_claim_3, b.cashout_1, b.cashout_2, b.cashout_3,
+    b.ratio_gmv_claim_1, b.ratio_gmv_claim_2, b.ratio_gmv_claim_3, b.ratio_co_1, b.ratio_co_2, b.ratio_co_3,
+    b.good_m1, b.good_m2, b.good_m3, b.bad_m1, b.bad_m2, b.bad_m3, a.riesgo, a.perfil, a.accion, a.motivo, a.regla
+  from limedi_com_cg a left join calculo_ratios b on a.cust_id = b.cust_id
+    UNION
+  select distinct
+    current_date, a.site_id, a.cust_id, a.segmento, a.subsegmento, a.tipofoco, a.trusted, a.ratio_tpv_on, zeroifnull(a.parcela_me2),
+    b.gmv_approved_1, b.gmv_approved_2, b.gmv_approved_3, b.gmv_claim_1, b.gmv_claim_2, b.gmv_claim_3, b.cashout_1, b.cashout_2, b.cashout_3,
+    b.ratio_gmv_claim_1, b.ratio_gmv_claim_2, b.ratio_gmv_claim_3, b.ratio_co_1, b.ratio_co_2, b.ratio_co_3,
+    b.good_m1, b.good_m2, b.good_m3, b.bad_m1, b.bad_m2, b.bad_m3, a.riesgo, a.perfil, a.accion, a.motivo, a.regla
+  from limedi_com_to a left join calculo_ratios b on a.cust_id = b.cust_id
+    UNION
+  select distinct
+    current_date, a.site_id, a.cust_id, a.segmento, a.subsegmento, a.tipofoco, a.trusted, a.ratio_tpv_on, zeroifnull(a.parcela_me2),
+    b.gmv_approved_1, b.gmv_approved_2, b.gmv_approved_3, b.gmv_claim_1, b.gmv_claim_2, b.gmv_claim_3, b.cashout_1, b.cashout_2, b.cashout_3,
+    b.ratio_gmv_claim_1, b.ratio_gmv_claim_2, b.ratio_gmv_claim_3, b.ratio_co_1, b.ratio_co_2, b.ratio_co_3,
+    b.good_m1, b.good_m2, b.good_m3, b.bad_m1, b.bad_m2, b.bad_m3, a.riesgo, a.perfil, a.accion, a.motivo, a.regla
+  from limedi_com_mt a left join calculo_ratios b on a.cust_id = b.cust_id
+    UNION
+  select distinct
+    current_date, a.site_id, a.cust_id, a.segmento, a.subsegmento, a.tipofoco, a.trusted, a.ratio_tpv_on, zeroifnull(a.parcela_me2),
+    b.gmv_approved_1, b.gmv_approved_2, b.gmv_approved_3, b.gmv_claim_1, b.gmv_claim_2, b.gmv_claim_3, b.cashout_1, b.cashout_2, b.cashout_3,
+    b.ratio_gmv_claim_1, b.ratio_gmv_claim_2, b.ratio_gmv_claim_3, b.ratio_co_1, b.ratio_co_2, b.ratio_co_3,
+    b.good_m1, b.good_m2, b.good_m3, b.bad_m1, b.bad_m2, b.bad_m3, a.riesgo, a.perfil, a.accion, a.motivo, a.regla
+  from limedi_restr a left join calculo_ratios b on a.cust_id = b.cust_id
+    UNION
+  select distinct
+    current_date, a.site_id, a.cust_id, a.segmento, a.subsegmento, a.tipofoco, a.trusted, a.ratio_tpv_on, zeroifnull(a.parcela_me2),
+    b.gmv_approved_1, b.gmv_approved_2, b.gmv_approved_3, b.gmv_claim_1, b.gmv_claim_2, b.gmv_claim_3, b.cashout_1, b.cashout_2, b.cashout_3,
+    b.ratio_gmv_claim_1, b.ratio_gmv_claim_2, b.ratio_gmv_claim_3, b.ratio_co_1, b.ratio_co_2, b.ratio_co_3,
+    b.good_m1, b.good_m2, b.good_m3, b.bad_m1, b.bad_m2, b.bad_m3, a.riesgo, a.perfil, a.accion, a.motivo, a.regla
+  from limedi_fat a left join calculo_ratios b on a.cust_id = b.cust_id
+    UNION
+  select distinct
+    current_date, a.site_id, a.cust_id, a.segmento, a.subsegmento, a.tipofoco, a.trusted, a.ratio_tpv_on, zeroifnull(a.parcela_me2),
+    b.gmv_approved_1, b.gmv_approved_2, b.gmv_approved_3, b.gmv_claim_1, b.gmv_claim_2, b.gmv_claim_3, b.cashout_1, b.cashout_2, b.cashout_3,
+    b.ratio_gmv_claim_1, b.ratio_gmv_claim_2, b.ratio_gmv_claim_3, b.ratio_co_1, b.ratio_co_2, b.ratio_co_3,
+    b.good_m1, b.good_m2, b.good_m3, b.bad_m1, b.bad_m2, b.bad_m3, a.riesgo, a.perfil, a.accion, a.motivo, a.regla
+  from limedi_churning a left join calculo_ratios b on a.cust_id = b.cust_id
+    UNION
+  select distinct
+    current_date, a.site_id, a.cust_id, a.segmento, a.subsegmento, a.tipofoco, a.trusted, a.ratio_tpv_on, zeroifnull(a.parcela_me2),
+    b.gmv_approved_1, b.gmv_approved_2, b.gmv_approved_3, b.gmv_claim_1, b.gmv_claim_2, b.gmv_claim_3, b.cashout_1, b.cashout_2, b.cashout_3,
+    b.ratio_gmv_claim_1, b.ratio_gmv_claim_2, b.ratio_gmv_claim_3, b.ratio_co_1, b.ratio_co_2, b.ratio_co_3,
+    b.good_m1, b.good_m2, b.good_m3, b.bad_m1, b.bad_m2, b.bad_m3, a.riesgo, a.perfil, a.accion, a.motivo, a.regla
+  from limedi_churn a left join calculo_ratios b on a.cust_id = b.cust_id
+    UNION
+  select distinct
+    current_date, a.site_id, a.cust_id, a.segmento, a.subsegmento, a.tipofoco, a.trusted, a.ratio_tpv_on, zeroifnull(a.parcela_me2),
+    b.gmv_approved_1, b.gmv_approved_2, b.gmv_approved_3, b.gmv_claim_1, b.gmv_claim_2, b.gmv_claim_3, b.cashout_1, b.cashout_2, b.cashout_3,
+    b.ratio_gmv_claim_1, b.ratio_gmv_claim_2, b.ratio_gmv_claim_3, b.ratio_co_1, b.ratio_co_2, b.ratio_co_3,
+    b.good_m1, b.good_m2, b.good_m3, b.bad_m1, b.bad_m2, b.bad_m3, a.riesgo, a.perfil, a.accion, a.motivo, a.regla
+  from limedi_gmv a left join calculo_ratios b on a.cust_id = b.cust_id;
+  
+
+
+-------------------------- SELEÇÃO DE DADOS --------------------------
+
+-- DDL dos dados
+select * from scoring.cleaning_flow_protected_users;
+
+delete from scoring.cleaning_flow_protected_users where insert_date = current_date and perfil = 'limpieza';
+
+UPDATE scoring.risk_microbof_efic_dia
+  SET insert_date = '2021-09-26'
+  WHERE data_fchmto_caso = '2021-09-25';
+
+
+
