@@ -1,0 +1,55 @@
+
+----------------------------------------------------------------------------------------
+------------------------------------ PU: STOCK N FLOW ----------------------------------
+----------------------------------------------------------------------------------------
+
+-- Doc Base: https://docs.google.com/presentation/d/1IBaPNaju2oAOmil_7qlePDtZcaGiIvTRouDh_S8Dsqg/edit#slide=id.gc8a1f1629c_0_0
+
+
+-------------------------- EXECUÇÃO DA REGRA --------------------------
+
+-- tabla de scoring para subir las infos
+create table scoring.stock_n_flow_protected_users
+  (
+  insert_date date,
+  stock int,
+  flow int,
+  entrada_x_perf int,
+  entrada_x_ped_com int,
+  entrada_discrecional int,
+  salida_x_perf int,
+  salida_x_limp int,
+  other_flow int
+  );
+
+
+-- estoque e fluxo dos PUs
+insert into scoring.stock_n_flow_protected_users
+  select
+    current_date,
+    count(user_id) stock,
+    zeroifnull((stock - (select stock from SCORING.stock_n_flow_protected_users where insert_date >= current_date - 32))) flow,
+    zeroifnull((select count(cust_id) from SCORING.performance_flow_protected_users where accion = 'añadir la marca' and insert_date >= current_date - 28)) entrada_x_perf,
+    zeroifnull((select count(cust_id) from SCORING.comercial_flow_protected_users where accion = 'añadir la marca' and insert_date >= current_date - 28)) entrada_x_ped_com,
+    zeroifnull((select count(cust_id) from SCORING.increase_flow_protected_users where accion = 'añadir la marca' and insert_date >= current_date - 28)) entrada_discrecional,
+    zeroifnull((select count(cust_id) from SCORING.performance_flow_protected_users where accion = 'quitar la marca' and insert_date >= current_date - 28)) salida_x_perf,
+    zeroifnull((select count(cust_id) from SCORING.cleaning_flow_protected_users where accion = 'quitar la marca' and insert_date >= current_date - 28)) salida_x_limp,
+    zeroifnull((stock - (select stock from scoring.stock_n_flow_protected_users where insert_date >= current_date - 28) - flow)) other_flow
+  from SCORING.sellers_protected_users
+  group by 1;
+
+
+
+--------------------------- SELEÇÃO DE DADOS ---------------------------
+
+-- DDL dos dados
+select * from scoring.stock_n_flow_protected_users order by 1 desc;
+
+delete from scoring.stock_n_flow_protected_users where insert_date = '2021-11-30';
+
+UPDATE scoring.stock_n_flow_protected_users
+  SET salida_x_perf = 1
+  WHERE insert_date = '2021-11-28';
+
+
+
